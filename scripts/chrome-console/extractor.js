@@ -23,7 +23,9 @@
     actives_StockBdr_Passivo: "https://investidor10.com.br/wallet/api/proxy/wallet-app/summary/actives/2232039/StockBdr",
     actives_Treasure_Passivo: "https://investidor10.com.br/wallet/api/proxy/wallet-app/summary/actives/2232039/Treasure",
     actives_fixed_Passivo: "https://investidor10.com.br/wallet/api/proxy/wallet-app/summary/actives/2232039/fixed",
-    actives_Other_Passivo: "https://investidor10.com.br/wallet/api/proxy/wallet-app/summary/actives/2232039/Other"
+    actives_Other_Passivo: "https://investidor10.com.br/wallet/api/proxy/wallet-app/summary/actives/2232039/Other",
+    actives_OuroFisico_Passivo: "https://investidor10.com.br/wallet/api/proxy/wallet-app/summary/actives/2232039/OuroFisico",
+    actives_PrataFisica_Passivo: "https://investidor10.com.br/wallet/api/proxy/wallet-app/summary/actives/2232039/PrataFisica"
   };
   const ratingDescricoes = {
     "0":  "Meus",
