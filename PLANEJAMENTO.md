@@ -1,7 +1,7 @@
 # Investidor100 — Planejamento do App
 
 > PWA de consolidação das duas carteiras do Investidor10
-> Última atualização: 2026-02-21 (script analisado)
+> Última atualização: 2026-02-21 (decisões de auth e hospedagem fechadas)
 
 ---
 
@@ -89,38 +89,73 @@ Aplicativo web progressivo (PWA) que:
 | SQLite (dev)     | Banco local (migrar para Postgres em produção) |
 | dotenv           | Credenciais das contas          |
 
-### Infraestrutura (sugestão)
-| Opção          | Custo      | Observação                          |
-|----------------|------------|-------------------------------------|
-| Fly.io         | ~free tier | Backend + banco, simples de deployar|
-| Railway        | ~free tier | Alternativa ao Fly.io               |
-| VPS próprio    | ~R$20/mês  | Máximo controle, Hetzner/Vultr      |
+### Infraestrutura
+
+#### Decisão confirmada: Hetzner CX22 ✅
+
+Requisitos que guiaram a escolha:
+- Acesso de qualquer lugar: celular + PC + 24/7
+- Playwright/Chromium precisam de ~400–700MB RAM
+- App pessoal (1 usuário), custo deve ser mínimo
+
+| Opção | Custo/mês | RAM | Playwright | Veredito |
+|-------|-----------|-----|------------|---------|
+| **Hetzner CX22** ← **escolhido** | €4,35 (~R$25) | 4GB | ✅ Roda bem | Melhor custo-benefício |
+| Railway Starter | ~$5–10 | 512MB–2GB | ⚠️ Apertado | DX melhor, mas caro e instável |
+| Fly.io | free → $5+ | 256MB–1GB | ❌ Muito apertado | Memória insuficiente |
+| VPS Vultr/DigitalOcean | $12+ | 2GB | ✅ | Mais caro que Hetzner |
+
+**Stack no VPS:**
+```
+Docker Compose
+├── api         (Node.js + Express + Playwright)  → porta 3001
+├── web         (Nginx servindo o build React)    → porta 80/443
+└── caddy       (HTTPS automático via Let's Encrypt)
+```
+
+**Deploy:** push no GitHub → GitHub Actions faz build + SSH deploy automático.
 
 ---
 
 ## 5. Fluxo de Dados
 
+### 5.1 Setup inicial (feito uma vez por mês)
+
 ```
-1. Cron job dispara a cada N horas
+1. Usuário faz login no investidor10.com.br com Google OAuth (no próprio browser)
         │
-2. Playwright abre browser headless (APENAS PARA LOGIN)
-   └─ acessa investidor10.com.br/login
-   └─ preenche email + senha do .env
-   └─ captura cookies de sessão
+2. Usuário abre o app → Configurações → Sessão → "Renovar sessão"
         │
-3. Axios/node-fetch usa os cookies capturados
-   └─ 24 chamadas REST em paralelo (batches de 4)
-   └─ Aplica lógica de enriquecimento (prazo + tributação)
+3. App mostra instruções: copiar cookie de sessão do DevTools
         │
-4. Normaliza e mescla Auvp + Passivo
-        │
-5. Salva snapshot no banco (com timestamp)
-        │
-6. PWA consulta API → exibe dashboards atualizados
+4. Usuário cola o cookie → app valida via chamada de teste → salva criptografado
 ```
 
-> Playwright é usado **somente na fase de login** — não para navegar páginas.
-> Isso reduz o tempo de coleta e evita detecção de bot em navegação.
+### 5.2 Coleta automática (a cada 6h)
+
+```
+1. Cron job dispara a cada 6 horas
+        │
+2. Backend carrega cookies criptografados do banco
+        │
+3. axios/node-fetch com os cookies persistidos
+   └─ 26 chamadas REST em paralelo (batches de 4, delay 150ms)
+   └─ Aplica lógica de enriquecimento (prazo + tributação)
+        │
+4. Se API retornar 401/403 → sessão expirada
+   └─ Marca no banco: session_expired = true
+   └─ App exibe aviso: "Sessão expirada — renove em Configurações"
+        │
+5. Normaliza e mescla Auvp + Passivo (26 endpoints → 1 snapshot consolidado)
+        │
+6. Salva snapshot no banco (com timestamp)
+        │
+7. PWA consulta API → exibe dashboards atualizados
+```
+
+> Playwright **não é usado** para login (OAuth é incompatível com automação).
+> Toda coleta é feita via chamadas HTTP simples com cookies persistidos.
+> Playwright permanece na stack como opção futura se necessário.
 
 ---
 
@@ -180,14 +215,51 @@ Total: **2 + 2 + (10 × 2) = 24 chamadas** por execução.
 O fetch usa `credentials: "include"` — os cookies de sessão do Investidor10
 já abertos no Chrome são enviados automaticamente.
 
-**Para automatizar no backend, duas opções:**
+#### Decisão confirmada: Google OAuth → Cookie Paste via Admin UI ✅
 
-| Opção | Como funciona | Prós | Contras |
-|-------|---------------|------|---------|
-| **A — Playwright faz login** | Playwright preenche email/senha, captura cookies, repassa para axios | Totalmente automático | Precisa de credenciais no `.env` |
-| **B — Cookie export manual** | Usuário exporta cookies do Chrome (extensão EditThisCookie), backend os lê de arquivo | Sem credenciais no servidor | Requer renovação periódica (~30 dias) |
+O login do Investidor10 usa **Google OAuth** — não existe formulário email/senha.
+Isso inviabiliza a automação direta do login com Playwright:
+- Google detecta navegadores automatizados e aciona CAPTCHA/verificação extra
+- O fluxo OAuth abre uma popup do Google que é difícil de controlar programaticamente
 
-**Recomendação: Opção A** para uso autônomo. Opção B como fallback de emergência.
+**Abordagem adotada: Cookie paste manual** (simples, confiável, funciona perfeitamente com OAuth)
+
+**Fluxo da autenticação:**
+
+```
+1. Usuário abre investidor10.com.br no Chrome e faz login normalmente (Google OAuth)
+2. Abre o app no celular/browser → vai em Configurações → Sessão
+3. Clica em "Renovar sessão" → app mostra instruções + link direto para DevTools
+4. Usuário copia o valor do cookie de sessão (ex: laravel_session ou similar)
+5. Cola no campo do app → backend valida fazendo 1 chamada de teste
+6. Se válido: salva criptografado no banco → scraping funciona automaticamente
+7. App mostra "Sessão expira em ~X dias" com alerta antes de expirar
+```
+
+**Por que funciona bem:**
+- Cookies do Investidor10 pós-OAuth duram tipicamente 30–90 dias
+- Renovar leva ~2 minutos (login já está feito no browser do usuário)
+- Zero credenciais armazenadas no servidor
+- Completamente imune a mudanças no fluxo OAuth do Google
+
+| Aspecto | Cookie Paste |
+|---------|-------------|
+| Complexidade de implementação | Baixa |
+| Confiabilidade | Alta (100%) |
+| Manutenção | ~1 vez por mês (2 min) |
+| Segurança | Alta (cookie criptografado no banco) |
+| Automação | Scraping 100% automático após setup |
+
+**Implementação no backend:**
+
+```typescript
+// admin route: POST /api/auth/session
+// body: { cookies: "laravel_session=abc123; xsrf-token=xyz..." }
+// 1. Testa cookies fazendo GET em um endpoint leve do Investidor10
+// 2. Se 200: salva criptografado (AES-256) no banco com timestamp
+// 3. Scraper usa os cookies persistidos para todas as 26 chamadas
+// 4. Se API retornar 401/403: marca sessão como expirada, notifica no app
+```
 
 ---
 
@@ -310,10 +382,11 @@ Estes grupos aparecem em filtros e análises no app.
 - Contribuição individual de cada ativo
 
 ### 7.5 Configurações
-- Credenciais das contas (Conta A e Conta B)
-- Frequência do scraping
+- **Sessão** — colar cookie do Investidor10, status da sessão, data de expiração estimada
+- Frequência do scraping (padrão: 6h)
 - Gerenciar passivos manualmente
 - Exportar dados (JSON / CSV)
+- Botão "Forçar atualização agora"
 
 ---
 
@@ -386,13 +459,23 @@ Investidor100/
 
 | Risco | Mitigação |
 |-------|-----------|
-| Investidor10 bloqueia o login automatizado (captcha, 2FA) | Playwright simula browser real com user-agent normal; armazenar e reutilizar cookies (relogin só quando expirar) |
-| Investidor10 muda os IDs das carteiras (808637, 2232039) | Detectar automaticamente na página de carteiras; alerta por log se endpoint retornar 404 |
-| Mudança nos endpoints da API interna | Testar semanalmente via health check; script manual como fallback imediato |
-| Credenciais expostas | `.env` nunca commitado (`.gitignore`); em produção usar secrets manager (Railway/Fly secrets) |
-| Sessão expira entre execuções do cron | Persistir cookies no banco/arquivo; tentar refresh antes de chamar APIs; relogin se falhar |
+| ~~Login automatizado bloqueado~~ | **Resolvido**: não automatizamos login. Cookie paste manual elimina o problema. |
+| Cookie de sessão expira | App monitora resposta das APIs; se 401/403 → alerta no app; renovação leva ~2 min |
+| Investidor10 muda IDs das carteiras (808637, 2232039) | Mesma conta confirmada; alerta por log se endpoint retornar 404 |
+| Mudança nos endpoints da API interna | Health check semanal; extractor.js original como fallback imediato |
+| Dados sensíveis (cookie de sessão) expostos | Cookie criptografado com AES-256 no banco; nunca em `.env` ou logs |
 | Rate limiting da API do Investidor10 | Manter batch de 4 requisições com delay de 150ms (igual ao script original) |
 | Dados desatualizados | Cron job a cada 6h + botão "Atualizar agora" no app + timestamp visível na UI |
+| VPS Hetzner fora do ar | Uptime típico >99,9%; backup do SQLite para S3/R2 (gratuito até 10GB) |
+
+### Decisões fechadas
+
+| Pergunta | Resposta | Impacto |
+|----------|----------|---------|
+| Tipo de login | Google OAuth | Não automatizamos login; usamos cookie paste |
+| Número de contas | 1 conta (2 carteiras) | Auth única, dois wallet IDs |
+| Hospedagem | Hetzner CX22 (~R$25/mês) | Docker Compose + HTTPS automático |
+| Acesso | Qualquer dispositivo 24/7 | PWA instalável no celular |
 
 ---
 
@@ -548,23 +631,25 @@ Filtros: Carteira (Auvp/Passivo), categoria_rating, Tipo, Ano/Mês/Dia
 
 1. ~~**Analisar o script do Chrome console**~~ ✅ Concluído — ver seção 6
 2. ~~**Analisar o pbix**~~ ✅ Concluído — ver seção 11
-3. **Corrigir o extractor.js**: adicionar `OuroFisico_Passivo` e `PrataFisica_Passivo` (ver 11.2)
-4. **Confirmar estrutura do login** do Investidor10:
-   - O login é por email/senha ou tem Google OAuth / 2FA?
-   - As duas carteiras (808637 e 2232039) estão na **mesma conta** ou em **contas diferentes**?
-5. **Decidir hospedagem**: self-hosted (VPS) ou plataforma gerenciada?
-6. **Iniciar Fase 1**: setup do monorepo + scraper de autenticação Playwright + chamadas REST
+3. ~~**Confirmar login**~~ ✅ Google OAuth → cookie paste manual
+4. ~~**Confirmar contas**~~ ✅ Mesma conta, duas carteiras (808637 / 2232039)
+5. ~~**Decidir hospedagem**~~ ✅ Hetzner CX22 (~R$25/mês)
+6. **Corrigir o extractor.js**: adicionar `OuroFisico_Passivo` e `PrataFisica_Passivo` (ver 11.2)
+7. **Iniciar Fase 1**: setup do monorepo + módulo de auth por cookie + fetcher REST
 
-### Ordem de implementação sugerida (Fase 1 detalhada)
+### Ordem de implementação (Fase 1 detalhada)
 
 ```
 1. Corrigir extractor.js (adicionar OuroFisico + PrataFisica no Passivo)
 2. Setup monorepo pnpm (apps/api, apps/web, packages/shared-types)
-3. Backend: módulo de auth Playwright
-   └─ login, captura + persistência de cookies
+3. Backend: módulo de sessão (cookie paste)
+   └─ POST /api/auth/session   → valida e salva cookie criptografado (AES-256)
+   └─ GET  /api/auth/status    → sessão válida? expira em?
 4. Backend: módulo fetcher (26 endpoints)
-   └─ porta de calcPrazoLiquidacao + calcTributacao + enrichItem para TypeScript
+   └─ porta calcPrazoLiquidacao + calcTributacao + enrichItem → TypeScript
+   └─ batch de 4 com delay 150ms
 5. Backend: schema Prisma
+   └─ Session { id, cookieEncrypted, validatedAt, lastUsedAt }
    └─ Snapshot { id, fetchedAt, rawJson }
    └─ WalletItem { snapshotId, wallet, tipo, ...campos }
 6. Backend: cron + API routes
@@ -573,7 +658,8 @@ Filtros: Carteira (Auvp/Passivo), categoria_rating, Tipo, Ano/Mês/Dia
    └─ GET /api/actives           → lista de ativos com filtros
    └─ GET /api/donut             → alocação por classe
    └─ GET /api/barchart          → evolução mensal
-7. Testar com JSON manual existente antes de automatizar o login
+7. Testar localmente com o JSON existente antes de fazer chamadas reais
+8. Frontend: tela de Configurações → aba Sessão (campo para colar cookie)
 ```
 
 ---
