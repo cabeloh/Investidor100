@@ -1,0 +1,32 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Stores the encrypted session cookie from Investidor10.
+// The user pastes the cookie once; the backend validates and saves it encrypted.
+model Session {
+  id               Int      @id @default(autoincrement())
+  cookieEncrypted  String   // AES-256-GCM encrypted
+  validatedAt      DateTime
+  lastUsedAt       DateTime
+  sessionExpired   Boolean  @default(false)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+// One row per scraping run — stores the full raw JSON from all 26 endpoints.
+// The API derives all views (portfolio, actives, donut, barchart) from this.
+model Snapshot {
+  id        Int      @id @default(autoincrement())
+  fetchedAt DateTime @default(now())
+  rawJson   String   // full JSON serialised as text
+  hasErrors Boolean  @default(false)
+}
